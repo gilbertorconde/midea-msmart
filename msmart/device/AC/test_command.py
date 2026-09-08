@@ -274,6 +274,29 @@ class TestStateResponse(_TestResponseBase):
         self.assertTrue(resp.cool_wind)
         self.assertTrue(resp.water_full)
 
+    def test_display_decode(self) -> None:
+        """Test decoding of the display state from bits 4-6 of byte 14."""
+        BASE = bytearray.fromhex(
+            "c00181667f7f003c0000006156050036000000000000004a")
+
+        # Only bits 4-6 hold the display state (7 == off); bits 0-3 are PMV
+        # and bit 7 is other data, so both must be ignored.
+        for byte_14, display_on in (
+            (0x70, False),
+            (0x77, False),  # Display off with PMV nibble set
+            (0x7F, False),
+            (0xF7, False),  # Bit 7 must be masked
+            (0x00, True),
+            (0x10, True),
+            (0x07, True),   # PMV nibble alone must not read as "on"
+        ):
+            payload = bytearray(BASE)
+            payload[14] = byte_14
+            with memoryview(bytes(payload)) as mv:
+                resp = cast(StateResponse, StateResponse(mv))
+            self.assertEqual(resp.display_on, display_on,
+                             f"byte 14 = {byte_14:#04x}")
+
     def test_message_checksum(self) -> None:
         # https://github.com/mill1000/midea-ac-py/issues/11#issuecomment-1650647625
         # V3 state response with checksum as CRC, and shorter than expected

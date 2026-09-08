@@ -1129,7 +1129,9 @@ class StateResponse(Response):
 
         self.filter_alert = bool(payload[13] & 0x20)
 
-        self.display_on = (payload[14] != 0x70)
+        # Bits 4-6 of byte 14 hold the display state (7 == off); bits 0-3 are PMV
+        # (Lua praser0xC0: screenDisplayNowValue = (byte14 & 0x70) >> 4)
+        self.display_on = ((payload[14] >> 4) & 0x7) != 0x7
 
         self.error_code = payload[16]
         # Water tank full is reported as a specific error code value

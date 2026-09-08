@@ -854,6 +854,43 @@ class TestRefresh(unittest.IsolatedAsyncioTestCase):
                             for cmd in commands))
 
 
+class TestApplyDisplayCompensation(unittest.IsolatedAsyncioTestCase):
+    # pylint: disable=protected-access
+
+    # Raw state response payload, byte 14 = 0x00 (display on)
+    BASE_PAYLOAD = bytearray.fromhex(
+        "c00181667f7f003c0000006156050036000000000000004a")
+
+    def _build_state_response(self, byte_14: int) -> StateResponse:
+        payload = bytearray(self.BASE_PAYLOAD)
+        payload[14] = byte_14
+        with memoryview(bytes(payload)) as mv:
+            return StateResponse(mv)
+
+    async def _test_apply(self, display_was_on: bool, ack_byte_14: int) -> bool:
+        """Run apply() and report whether it sent a compensating display toggle."""
+        device = AC(0, 0, 0)
+        device._display_on = display_was_on
+
+        response = self._build_state_response(ack_byte_14)
+        with patch("msmart.device.AC.device.AirConditioner._send_commands_get_responses", return_value=[response]), \
+                patch("msmart.device.AC.device.AirConditioner.toggle_display") as patched_toggle:
+            await device.apply()
+            return patched_toggle.await_count > 0
+
+    async def test_display_forced_on_is_toggled_back_off(self) -> None:
+        """Test that apply() re-toggles the display when the ACK reports it turned on."""
+        self.assertTrue(await self._test_apply(display_was_on=False, ack_byte_14=0x00))
+
+    async def test_display_already_on_is_left_alone(self) -> None:
+        """Test that apply() does not toggle a display that was already on."""
+        self.assertFalse(await self._test_apply(display_was_on=True, ack_byte_14=0x00))
+
+    async def test_display_still_off_is_left_alone(self) -> None:
+        """Test that apply() does not toggle when the ACK reports the display off."""
+        self.assertFalse(await self._test_apply(display_was_on=False, ack_byte_14=0x70))
+
+
 class TestSendCommandGetResponse(unittest.IsolatedAsyncioTestCase):
     # pylint: disable=protected-access
 

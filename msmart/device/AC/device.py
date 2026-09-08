@@ -841,6 +841,9 @@ class AirConditioner(Device):
             _LOGGER.warning(
                 "Device is not capable of aux mode %r.", self._aux_mode)
 
+        # Snapshot the display state so a firmware-forced turn-on can be undone
+        display_was_on = self._display_on
+
         cmd = self._build_set_state_command()
 
         # Process any state responses from the device
@@ -850,21 +853,26 @@ class AirConditioner(Device):
         # Timer change (if any) has now been sent
         self._timer_dirty = False
 
-        # Done if no properties need updating
-        if not len(self._updated_properties):
-            return
+        # Update properties if any need updating
+        if len(self._updated_properties):
+            # Get current state of updated properties
+            props = {
+                k: self._PROPERTY_MAP[k](self)
+                for k in self._updated_properties & self._PROPERTY_MAP.keys()
+            }
 
-        # Get current state of updated properties
-        props = {
-            k: self._PROPERTY_MAP[k](self)
-            for k in self._updated_properties & self._PROPERTY_MAP.keys()
-        }
+            # Apply new properties
+            await self._apply_properties(props)
 
-        # Apply new properties
-        await self._apply_properties(props)
+            # Reset updated properties set
+            self._updated_properties.clear()
 
-        # Reset updated properties set
-        self._updated_properties.clear()
+        # The unit firmware turns the display on when it receives any command.
+        # If the display was off before this apply, toggle it back off.
+        if display_was_on is False and self._display_on:
+            _LOGGER.debug(
+                "Device %s display turned on by command, toggling it back off.", self.id)
+            await self.toggle_display()
 
     def override_capabilities(self, overrides: dict[str, Any], **kwargs) -> None:
         """Override device capabilities via serialized dict."""
