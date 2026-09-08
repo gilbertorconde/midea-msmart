@@ -9,10 +9,11 @@ from msmart.const import DeviceType
 from msmart.frame import InvalidFrameException
 from msmart.utils import CapabilityManager, MideaIntEnum, deprecated
 
-from .command import (CapabilitiesResponse, Command, EnergyUsageResponse,
-                      GetCapabilitiesCommand, GetEnergyUsageCommand,
-                      GetGroup5Command, GetPropertiesCommand, GetStateCommand,
-                      Group5Response, InvalidResponseException,
+from .command import (CapabilitiesResponse, Command, GetCapabilitiesCommand,
+                      GetGroupDataCommand, GetPropertiesCommand,
+                      GetStateCommand, Group1Response, Group2Response,
+                      Group4Response, Group5Response, Group7Response,
+                      Group11Response, InvalidResponseException,
                       PropertiesResponse, PropertyId, Response,
                       SetPropertiesCommand, SetStateCommand, StateResponse,
                       ToggleDisplayCommand)
@@ -91,6 +92,15 @@ class AirConditioner(Device):
 
         DEFAULT = OFF
 
+    class FreshAirFanSpeed(MideaIntEnum):
+        OFF = 0
+        LOW = 40
+        MEDIUM = 60
+        HIGH = 80
+        BOOST = 100
+
+        DEFAULT = OFF
+
     class AuxHeatMode(MideaIntEnum):
         OFF = 0
         AUX_HEAT = 1
@@ -131,8 +141,8 @@ class AirConditioner(Device):
 
         # Misc
         CASCADE = auto()
+        FLASH = auto()
         FRESH_AIR = auto()
-        JET_COOL = auto()
         OUT_SILENT = auto()
         PURIFIER = auto()
         SELF_CLEAN = auto()
@@ -150,9 +160,9 @@ class AirConditioner(Device):
         PropertyId.BREEZE_CONTROL: lambda s: s._breeze_mode,
         PropertyId.BREEZELESS: lambda s: s._breeze_mode == AirConditioner.BreezeMode.BREEZELESS,
         PropertyId.CASCADE: lambda s: s._cascade_mode,
+        PropertyId.FLASH: lambda s: s._flash,
         PropertyId.FRESH_AIR: lambda s: (s._fresh_air, s._fresh_air_fan_speed),
-        PropertyId.IECO: lambda s: s._ieco,
-        PropertyId.JET_COOL: lambda s: s._flash_cool,
+        PropertyId.IECO: lambda s: (s._ieco_number, s._ieco),
         PropertyId.OUT_SILENT: lambda s: s._out_silent,
         PropertyId.RATE_SELECT: lambda s: s._rate_select,
         PropertyId.SWING_LR_ANGLE: lambda s: s._horizontal_swing_angle,
@@ -196,7 +206,8 @@ class AirConditioner(Device):
         self._follow_me = False
         self._purifier = False
         self._ieco = False
-        self._flash_cool = False
+        self._ieco_number = 1
+        self._flash = False
         self._out_silent = False
 
         self._horizontal_swing_angle = AirConditioner.SwingAngle.OFF
@@ -259,6 +270,28 @@ class AirConditioner(Device):
         }
         self._use_binary_energy = False  # Deprecated
 
+        # Group 1 — outdoor unit performance data
+        self._target_compressor_frequency: Optional[int] = None
+        self._compressor_frequency: Optional[int] = None
+        self._compressor_current: Optional[int] = None
+        self._compressor_voltage: Optional[int] = None
+        # Refrigerant circuit temperatures
+        self._indoor_coil_temperature: Optional[float] = None
+        self._outdoor_coil_temperature: Optional[float] = None
+        self._discharge_pipe_temperature: Optional[int] = None
+
+        # Group 2 — indoor unit fan data
+        self._target_indoor_fan_speed: Optional[int] = None
+        self._indoor_fan_speed: Optional[int] = None
+        self._water_pump_running: Optional[bool] = None
+
+        # Group 7 — outdoor unit power
+        self._outdoor_unit_power: Optional[float] = None
+
+        # Group 11 — louvers angles
+        self._horizontal_louvers_angle: Optional[int] = None
+        self._vertical_louvers_angle: Optional[int] = None
+
         # Capabilities
         self._min_target_temperature = 16
         self._max_target_temperature = 30
@@ -276,8 +309,12 @@ class AirConditioner(Device):
         self._supported_aux_modes = [AirConditioner.AuxHeatMode.OFF]
 
         # Misc
-        self._request_energy_usage = False
+        self._request_group1_data = False
+        self._request_group2_data = False
+        self._request_group4_data = False
         self._request_group5_data = False
+        self._request_group7_data = False
+        self._request_group11_data = False
 
         # Default to assuming device can't handle any properties
         self._supported_properties = set()
@@ -377,6 +414,9 @@ class AirConditioner(Device):
                     AirConditioner.CascadeMode,
                     AirConditioner.CascadeMode.get_from_value(cascade))
 
+            if (value := res.get_property(PropertyId.FLASH)) is not None:
+                self._flash = value
+
             if (value := res.get_property(PropertyId.SELF_CLEAN)) is not None:
                 self._self_clean_active = value
 
@@ -404,14 +444,34 @@ class AirConditioner(Device):
             if (value := res.get_property(PropertyId.IECO)) is not None:
                 self._ieco = value
 
-            if (value := res.get_property(PropertyId.JET_COOL)) is not None:
-                self._flash_cool = value
-
             if (value := res.get_property(PropertyId.OUT_SILENT)) is not None:
                 self._out_silent = value
 
-        elif isinstance(res, EnergyUsageResponse):
-            _LOGGER.debug("Energy response payload from device %s: %s",
+        elif isinstance(res, Group1Response):
+            _LOGGER.debug("Group 1 response payload from device %s: %s",
+                          self.id, res)
+
+            self._target_compressor_frequency = res.target_compressor_frequency
+            self._target_compressor_frequency = res.target_compressor_frequency
+            self._compressor_frequency = res.compressor_frequency
+            self._compressor_current = res.compressor_current
+            self._compressor_voltage = res.compressor_voltage
+            # self._indoor_temperature = res.indoor_temperature
+            self._indoor_coil_temperature = res.indoor_coil_temperature
+            self._outdoor_coil_temperature = res.outdoor_coil_temperature
+            # self._outdoor_temperature = res.outdoor_temperature
+            self._discharge_pipe_temperature = res.discharge_pipe_temperature
+
+        elif isinstance(res, Group2Response):
+            _LOGGER.debug("Group 2 response payload from device %s: %s",
+                          self.id, res)
+
+            self._target_indoor_fan_speed = res.target_indoor_fan_speed
+            self._indoor_fan_speed = res.indoor_fan_speed
+            self._water_pump_running = res.water_pump_running
+
+        elif isinstance(res, Group4Response):
+            _LOGGER.debug("Group 4 (energy data) response payload from device %s: %s",
                           self.id, res)
 
             self._total_energy_usage = {AirConditioner.EnergyDataFormat.BCD: res.total_energy,
@@ -430,6 +490,19 @@ class AirConditioner(Device):
             self._indoor_humidity = res.humidity
             self._outdoor_fan_speed = res.outdoor_fan_speed
             self._defrost_active = res.defrost
+
+        elif isinstance(res, Group7Response):
+            _LOGGER.debug("Group 7 response payload from device %s: %s",
+                          self.id, res)
+
+            self._outdoor_unit_power = res.outdoor_unit_power
+
+        elif isinstance(res, Group11Response):
+            _LOGGER.debug("Group 11 response payload from device %s: %s",
+                          self.id, res)
+
+            self._horizontal_louvers_angle = res.horizontal_louvers_angle
+            self._vertical_louvers_angle = res.vertical_louvers_angle
 
         else:
             _LOGGER.debug("Ignored unknown response from device %s: %s",
@@ -509,7 +582,7 @@ class AirConditioner(Device):
 
         # Allow capabilities to enable energy usage requests, but not disable them
         # We've seen devices that claim no capability but return energy data
-        self._request_energy_usage |= res.energy_stats
+        self._request_group4_data |= res.energy_stats
 
         self._capabilities.set(
             AirConditioner.Capability.HUMIDITY, res.humidity)
@@ -522,6 +595,11 @@ class AirConditioner(Device):
             AirConditioner.Capability.SWING_HORIZONTAL_ANGLE, res.swing_horizontal_angle)
 
         self._capabilities.set(AirConditioner.Capability.CASCADE, res.cascade)
+
+        self._capabilities.set(AirConditioner.Capability.FLASH, res.flash)
+
+        self._capabilities.set(
+            AirConditioner.Capability.FRESH_AIR, res.fresh_air)
 
         self._capabilities.set(
             AirConditioner.Capability.FRESH_AIR, res.fresh_air)
@@ -557,8 +635,7 @@ class AirConditioner(Device):
                 AirConditioner.Capability.BREEZELESS, res.breezeless)
 
         self._capabilities.set(AirConditioner.Capability.IECO, res.ieco)
-        self._capabilities.set(
-            AirConditioner.Capability.JET_COOL, res.jet_cool)
+        self._ieco_number = res.ieco_number
 
         self._capabilities.set(
             AirConditioner.Capability.OUT_SILENT, res.out_silent)
@@ -574,9 +651,9 @@ class AirConditioner(Device):
             AirConditioner.Capability.BREEZE_CONTROL: PropertyId.BREEZE_CONTROL,
             AirConditioner.Capability.BREEZELESS: PropertyId.BREEZELESS,
             AirConditioner.Capability.CASCADE: PropertyId.CASCADE,
+            AirConditioner.Capability.FLASH: PropertyId.FLASH,
             AirConditioner.Capability.FRESH_AIR: PropertyId.FRESH_AIR,
             AirConditioner.Capability.IECO: PropertyId.IECO,
-            AirConditioner.Capability.JET_COOL: PropertyId.JET_COOL,
             AirConditioner.Capability.OUT_SILENT: PropertyId.OUT_SILENT,
             AirConditioner.Capability.SELF_CLEAN: PropertyId.SELF_CLEAN,
             AirConditioner.Capability.SWING_HORIZONTAL_ANGLE: PropertyId.SWING_LR_ANGLE,
@@ -703,15 +780,31 @@ class AirConditioner(Device):
         # Always request state updates
         commands.append(GetStateCommand())
 
-        # Fetch power stats if supported
-        if self._request_energy_usage:
-            commands.append(GetEnergyUsageCommand())
+        # Request Group 1 data (outdoor unit performance) if enabled
+        if self._request_group1_data:
+            commands.append(GetGroupDataCommand(1))
+
+        # Request Group 2 data (indoor fan speed) if enabled
+        if self._request_group2_data:
+            commands.append(GetGroupDataCommand(2))
+
+        # Request Group 4 data (energy stats) if supported
+        if self._request_group4_data:
+            commands.append(GetGroupDataCommand(4))
 
         # Request Group 5 data if humidity is supported or otherwise enabled
         if self.supports_humidity or self._request_group5_data:
-            commands.append(GetGroup5Command())
+            commands.append(GetGroupDataCommand(5))
 
-        # Update supported properties
+        # Request Group 7 data (outdoor unit power) if enabled
+        if self._request_group7_data:
+            commands.append(GetGroupDataCommand(7))
+
+        # Request Group 11 data (louvers angles) if enabled
+        if self._request_group11_data:
+            commands.append(GetGroupDataCommand(11))
+
+            # Update supported properties
         if len(self._supported_properties):
             commands.append(GetPropertiesCommand(self._supported_properties))
 
@@ -1110,17 +1203,17 @@ class AirConditioner(Device):
         self._updated_properties.add(PropertyId.IECO)
 
     @property
-    def supports_flash_cool(self) -> bool:
-        return self._capabilities.has(AirConditioner.Capability.JET_COOL)
+    def supports_flash(self) -> bool:
+        return self._capabilities.has(AirConditioner.Capability.FLASH)
 
     @property
-    def flash_cool(self) -> Optional[bool]:
-        return self._flash_cool
+    def flash(self) -> Optional[bool]:
+        return self._flash
 
-    @flash_cool.setter
-    def flash_cool(self, enabled: bool) -> None:
-        self._flash_cool = enabled
-        self._updated_properties.add(PropertyId.JET_COOL)
+    @flash.setter
+    def flash(self, enabled: bool) -> None:
+        self._flash = enabled
+        self._updated_properties.add(PropertyId.FLASH)
 
     @property
     def supports_fresh_air(self) -> bool:
@@ -1317,11 +1410,11 @@ class AirConditioner(Device):
 
     @property
     def enable_energy_usage_requests(self) -> bool:
-        return self._request_energy_usage
+        return self._request_group4_data
 
     @enable_energy_usage_requests.setter
     def enable_energy_usage_requests(self, enable: bool) -> None:
-        self._request_energy_usage = enable
+        self._request_group4_data = enable
 
     def get_total_energy_usage(self, format: EnergyDataFormat = EnergyDataFormat.BCD) -> Optional[float]:
         return self._total_energy_usage[format]
@@ -1390,12 +1483,104 @@ class AirConditioner(Device):
         return self._error_code
 
     @property
+    def enable_group1_data_requests(self) -> bool:
+        """Enable Group data 1 (outdoor unit performance data) queries."""
+        return self._request_group1_data
+
+    @enable_group1_data_requests.setter
+    def enable_group1_data_requests(self, enable: bool) -> None:
+        self._request_group1_data = enable
+
+    @property
+    def enable_group2_data_requests(self) -> bool:
+        """Enable Group data 2 (indoor fan speed data) queries."""
+        return self._request_group2_data
+
+    @enable_group2_data_requests.setter
+    def enable_group2_data_requests(self, enable: bool) -> None:
+        self._request_group2_data = enable
+
+    @property
     def enable_group5_data_requests(self) -> bool:
+        """Enable Group data 5 (humidity, defrost, outdoor fan speed) queries."""
         return self._request_group5_data
 
     @enable_group5_data_requests.setter
     def enable_group5_data_requests(self, enable: bool) -> None:
         self._request_group5_data = enable
+
+    @property
+    def enable_group7_data_requests(self) -> bool:
+        """Enable Group 7 data (outdoor unit power) queries."""
+        return self._request_group7_data
+
+    @enable_group7_data_requests.setter
+    def enable_group7_data_requests(self, enable: bool) -> None:
+        self._request_group7_data = enable
+
+    @property
+    def enable_group11_data_requests(self) -> bool:
+        """Enable Group 11 data (louvers angles) queries."""
+        return self._request_group11_data
+
+    @enable_group11_data_requests.setter
+    def enable_group11_data_requests(self, enable: bool) -> None:
+        self._request_group11_data = enable
+
+    @property
+    def target_compressor_frequency(self) -> Optional[int]:
+        """Target compressor operating frequency in Hz."""
+        return self._target_compressor_frequency
+
+    @property
+    def compressor_frequency(self) -> Optional[int]:
+        """Compressor operating frequency in Hz."""
+        return self._compressor_frequency
+
+    @property
+    def compressor_current(self) -> Optional[int]:
+        """Total current draw of the outdoor unit in Amperes."""
+        return self._compressor_current
+
+    @property
+    def compressor_voltage(self) -> Optional[int]:
+        """Supply voltage of the outdoor unit in Volts."""
+        return self._compressor_voltage
+
+    @property
+    def indoor_coil_temperature(self) -> Optional[float]:
+        """Indoor coil temperature in C — T2 sensor."""
+        return self._indoor_coil_temperature
+
+    @property
+    def outdoor_coil_temperature(self) -> Optional[float]:
+        """Outdoor coil temperature in C - T3 sensor."""
+        return self._outdoor_coil_temperature
+
+    @property
+    def discharge_pipe_temperature(self) -> Optional[int]:
+        """Discharge pipe temperature in C - TP sensor."""
+        return self._discharge_pipe_temperature
+
+    @property
+    def target_indoor_fan_speed(self) -> Optional[int]:
+        """Target indoor fan speed."""
+        return self._target_indoor_fan_speed
+
+    @property
+    def indoor_fan_speed(self) -> Optional[int]:
+        """Indoor fan speed in RPM."""
+        return self._indoor_fan_speed
+
+    @property
+    def water_pump_running(self) -> Optional[bool]:
+        """Condensate water pump is currently running."""
+        return self._water_pump_running
+
+    @property
+    def outdoor_unit_power(self) -> Optional[float]:
+        """Real-time power draw of the outdoor unit in Watts."""
+        return self._outdoor_unit_power
 
     @property
     def defrost_active(self) -> Optional[bool]:
@@ -1404,6 +1589,14 @@ class AirConditioner(Device):
     @property
     def outdoor_fan_speed(self) -> Optional[int]:
         return self._outdoor_fan_speed
+
+    @property
+    def horizontal_louvers_angle(self) -> Optional[int]:
+        return self._horizontal_louvers_angle
+
+    @property
+    def vertical_louvers_angle(self) -> Optional[int]:
+        return self._vertical_louvers_angle
 
     @property
     def supports_out_silent(self) -> bool:
@@ -1426,13 +1619,18 @@ class AirConditioner(Device):
             "swing_mode": self.swing_mode,
             "horizontal_swing_angle": self.horizontal_swing_angle,
             "vertical_swing_angle": self.vertical_swing_angle,
+            "breezeless": self.breezeless,
+            "breeze_away": self.breeze_away,
+            "breeze_mild": self.breeze_mild,
             "cascade_mode": self.cascade_mode,
+            "fresh_air_fan_speed": self.fresh_air_fan_speed,
             "target_temperature": self.target_temperature,
             "indoor_temperature": self.indoor_temperature,
             "outdoor_temperature": self.outdoor_temperature,
             "target_humidity": self.target_humidity,
             "indoor_humidity": self.indoor_humidity,
             "eco": self.eco,
+            "ieco": self.ieco,
             "turbo": self.turbo,
             "freeze_protection": self.freeze_protection,
             "sleep": self.sleep,
@@ -1467,6 +1665,25 @@ class AirConditioner(Device):
             "natural_wind": self.natural_wind,
             "child_sleep": self.child_sleep,
             "water_full": self.water_full,
+            "flash": self.flash,
+            # Group 1 — outdoor unit performance
+            "outdoor_fan_speed": self.outdoor_fan_speed,
+            "target_compressor_frequency": self.target_compressor_frequency,
+            "compressor_frequency": self.compressor_frequency,
+            "compressor_current": self.compressor_current,
+            "compressor_voltage": self.compressor_voltage,
+            "indoor_coil_temperature": self.indoor_coil_temperature,
+            "outdoor_coil_temperature": self.outdoor_coil_temperature,
+            "discharge_pipe_temperature": self.discharge_pipe_temperature,
+            # Group 2 — indoor unit fan data
+            "target_indoor_fan_speed": self.target_indoor_fan_speed,
+            "indoor_fan_speed": self.indoor_fan_speed,
+            "water_pump_running": self.water_pump_running,
+            # Group 7 — outdoor unit power
+            "outdoor_unit_power": self.outdoor_unit_power,
+            # Group 11 — louvers angles
+            "horizontal_louvers_angle": self.horizontal_louvers_angle,
+            "vertical_louvers_angle": self.vertical_louvers_angle,
         }}
 
     def capabilities_dict(self) -> dict:
@@ -1564,3 +1781,18 @@ class AirConditioner(Device):
     def real_time_power_usage(self) -> Optional[float]:
         format = AirConditioner.EnergyDataFormat.BINARY if self._use_binary_energy else AirConditioner.EnergyDataFormat.BCD
         return self._real_time_power_usage[format]
+
+    @property
+    @deprecated("supports_flash")
+    def supports_flash_cool(self) -> bool:
+        return self.supports_flash
+
+    @property
+    @deprecated("flash")
+    def flash_cool(self) -> Optional[bool]:
+        return self.flash
+
+    @flash_cool.setter
+    @deprecated("flash")
+    def flash_cool(self, enabled: bool) -> None:
+        self.flash = enabled

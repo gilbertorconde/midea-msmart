@@ -156,6 +156,11 @@ usage: msmart-ng [-h] [-v] {discover,query,control,download} ...
 * If devices are not being discovered, ensure your devices are on the same subnet as your computer.
 * If a cloud connection can not be made, try using a credentials from a different region with the `--region` argument or manually specifying a NetHome Plus account.
 
+## Ecosystem
+These projects are utilizing msmart-ng.
+* [mill1000/midea-ac-py](https://github.com/mill1000/midea-ac-py) - Home Assistant Integration
+* [sidey79/midea-mqtt](https://github.com/sidey79/midea-mqtt) - MQTT Bridge
+
 ## Gratitude
 This project is a fork of [mac-zhou/midea-msmart](https://github.com/mac-zhou/midea-msmart), and builds upon the work of
 * [dudanov/MideaUART](https://github.com/dudanov/MideaUART)
